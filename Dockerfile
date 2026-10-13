@@ -6,12 +6,11 @@ WORKDIR /app
 # Cài đặt git và ca-certificates
 RUN apk add --no-cache git ca-certificates
 
-# Copy go.mod và tải dependencies
-COPY go.mod ./
-RUN go mod tidy
-
 # Copy toàn bộ mã nguồn
 COPY . .
+
+# Đồng bộ dependencies và tải các thư viện cần thiết
+RUN go mod tidy && go mod download
 
 # Biên dịch tĩnh từ cmd/server, loại bỏ debug symbols (-w -s)
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o server ./cmd/server
