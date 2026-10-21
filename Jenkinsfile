@@ -48,7 +48,7 @@ pipeline {
         stage('4. Docker Build & Trivy CVE Scan') {
             steps {
                 echo "🐳 Build Docker Image: ${IMAGE_NAME}:${IMAGE_TAG}..."
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:dev-latest ."
 
                 echo '🛡️ Quét lỗ hổng bảo mật Docker Image bằng Trivy...'
                 sh '''
@@ -64,17 +64,14 @@ pipeline {
         stage('5. Push Image to Registry') {
             steps {
                 echo "🚀 Đẩy image lên Docker Hub: ${IMAGE_NAME}:${IMAGE_TAG}..."
-                // Cấu hình Credentials trong Jenkins ID 'docker-hub-credentials'
-                /*
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     sh '''
                         echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
                         docker push ${IMAGE_NAME}:${IMAGE_TAG}
                         docker push ${IMAGE_NAME}:latest
+                        docker push ${IMAGE_NAME}:dev-latest
                     '''
                 }
-                */
-                echo "Giả lập đẩy thành công image ${IMAGE_NAME}:${IMAGE_TAG}"
             }
         }
 
