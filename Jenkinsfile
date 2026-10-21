@@ -40,6 +40,8 @@ pipeline {
             steps {
                 echo '🧪 Chạy Unit Test Go...'
                 sh '''
+                    export GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+                    export GOSUMDB=off
                     go test -v ./... || true
                 '''
             }

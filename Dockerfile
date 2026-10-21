@@ -6,6 +6,10 @@ WORKDIR /app
 # Cài đặt git và ca-certificates
 RUN apk add --no-cache git ca-certificates
 
+# Cấu hình Go Proxy và tắt GOSUMDB để tránh lỗi stream error / timeout tới sum.golang.org
+ENV GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+ENV GOSUMDB=off
+
 # Copy toàn bộ mã nguồn
 COPY . .
 
