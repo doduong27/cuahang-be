@@ -1,44 +1,75 @@
 pipeline {
     agent any
 
+    parameters {
+        choice(
+            name: 'TARGET_ENV',
+            choices: ['dev', 'stag', 'prod'],
+            description: '🎯 Chọn môi trường bạn muốn triển khai Backend (Go):'
+        )
+        choice(
+            name: 'ACTION',
+            choices: ['Build & Deploy', 'Deploy Only (Promote)'],
+            description: '⚙️ Chọn hành động (Build & Deploy: build code mới; Deploy Only: đưa tag đã có sang môi trường này):'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'v1.0.0',
+            description: '🏷️ Tag phiên bản SemVer (ví dụ: v1.0.0, v1.1.0, v2.0.0):'
+        )
+    }
+
     environment {
         APP_NAME        = 'cuahang-be'
         DOCKER_HUB_USER = 'dvduong'
         IMAGE_NAME      = "${DOCKER_HUB_USER}/${APP_NAME}"
-        IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
-        GITOPS_REPO     = 'https://github.com/doduong27/cuahang-gitops.git'
+        GITOPS_REPO_SSH = 'git@github.com:doduong27/cuahang-gitops.git'
     }
 
     stages {
-        stage('1. Pre-Check & Secret Scanning') {
+        stage('1. Khởi tạo & Xác định phiên bản') {
             steps {
-                echo '🛡️ Quét rò rỉ secret trong mã nguồn (Gitleaks)...'
+                script {
+                    if (params.ACTION == 'Build & Deploy') {
+                        env.FINAL_TAG = params.IMAGE_TAG ?: "build-${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+                    } else {
+                        env.FINAL_TAG = params.IMAGE_TAG
+                    }
+                    echo "=========================================================="
+                    echo "🚀 KẾ HOẠCH TRIỂN KHAI BACKEND (Go Gin + PostgreSQL):"
+                    echo "   - Ứng dụng: ${APP_NAME}"
+                    echo "   - Môi trường đích: [ ${params.TARGET_ENV.toUpperCase()} ]"
+                    echo "   - Hành động: ${params.ACTION}"
+                    echo "   - Phiên bản Image Tag: ${env.FINAL_TAG}"
+                    echo "=========================================================="
+                }
+            }
+        }
+
+        stage('2. Quét bảo mật & Unit Test (Chỉ khi Build)') {
+            when {
+                expression { return params.ACTION == 'Build & Deploy' }
+            }
+            steps {
+                echo '🛡️ 1. Quét rò rỉ secret trong mã nguồn (Gitleaks)...'
                 sh '''
                     if command -v gitleaks &> /dev/null; then
                         gitleaks detect --source . --verbose --no-git || true
                     else
-                        echo "Gitleaks chưa cài, bỏ qua bước quét"
+                        echo "Gitleaks chưa cài, bỏ qua quét secret"
                     fi
                 '''
-            }
-        }
 
-        stage('2. Static Code Analysis (SAST)') {
-            steps {
-                echo '🛡️ Phân tích tĩnh mã nguồn Go bằng Semgrep...'
+                echo '🛡️ 2. Phân tích tĩnh mã nguồn Go bằng Semgrep (SAST)...'
                 sh '''
                     if command -v semgrep &> /dev/null; then
                         semgrep --config p/golang --error . || true
                     else
-                        echo "Semgrep chưa cài, bỏ qua bước SAST"
+                        echo "Semgrep chưa cài, bỏ qua SAST"
                     fi
                 '''
-            }
-        }
 
-        stage('3. Unit Test') {
-            steps {
-                echo '🧪 Chạy Unit Test Go...'
+                echo '🧪 3. Chạy Unit Test Go...'
                 sh '''
                     export GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
                     export GOSUMDB=off
@@ -47,61 +78,83 @@ pipeline {
             }
         }
 
-        stage('4. Docker Build & Trivy CVE Scan') {
+        stage('3. Build & Push Docker Image') {
+            when {
+                expression { return params.ACTION == 'Build & Deploy' }
+            }
             steps {
-                echo "🐳 Build Docker Image: ${IMAGE_NAME}:${IMAGE_TAG}..."
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:dev-latest ."
+                echo "🐳 Đang Build Docker Image ${IMAGE_NAME}:${env.FINAL_TAG}..."
+                sh "docker build -t ${IMAGE_NAME}:${env.FINAL_TAG} -t ${IMAGE_NAME}:latest -t ${IMAGE_NAME}:${params.TARGET_ENV}-latest ."
 
                 echo '🛡️ Quét lỗ hổng bảo mật Docker Image bằng Trivy...'
-                sh '''
+                sh """
                     if command -v trivy &> /dev/null; then
-                        trivy image --severity CRITICAL --exit-code 0 ${IMAGE_NAME}:${IMAGE_TAG} || true
+                        trivy image --severity CRITICAL --exit-code 0 ${IMAGE_NAME}:${env.FINAL_TAG} || true
                     else
                         echo "Trivy chưa cài, bỏ qua quét Image"
                     fi
-                '''
-            }
-        }
+                """
 
-        stage('5. Push Image to Registry') {
-            steps {
-                echo "🚀 Đẩy image lên Docker Hub: ${IMAGE_NAME}:${IMAGE_TAG}..."
+                echo "🚀 Đẩy image lên Docker Hub..."
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh '''
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                    sh """
+                        echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
+                        docker push ${IMAGE_NAME}:${env.FINAL_TAG}
                         docker push ${IMAGE_NAME}:latest
-                        docker push ${IMAGE_NAME}:dev-latest
-                    '''
+                        docker push ${IMAGE_NAME}:${params.TARGET_ENV}-latest
+                    """
                 }
             }
         }
 
-        stage('6. Update GitOps Manifest (Dev Overlay)') {
+        stage('4. Cập nhật GitOps Manifest') {
             steps {
-                echo "🔄 Tự động cập nhật image tag vào repo GitOps..."
-                /*
+                echo "🔄 Đang cập nhật Kustomize Manifest cho môi trường: ${params.TARGET_ENV}..."
                 sh """
-                    git clone ${GITOPS_REPO} gitops-workdir
-                    cd gitops-workdir/projects/cuahang/overlays/dev
-                    kustomize edit set image ${IMAGE_NAME}=${IMAGE_NAME}:${IMAGE_TAG}
+                    rm -rf gitops-tmp
+                    GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" git clone ${GITOPS_REPO_SSH} gitops-tmp
+                    cd gitops-tmp/projects/cuahang/overlays/${params.TARGET_ENV}
+                    
+                    # Sử dụng Kustomize CLI để cập nhật image tag backend chuẩn xác
+                    kustomize edit set image cuahang-be=docker.io/${IMAGE_NAME}:${env.FINAL_TAG}
+                    
                     git config user.name "jenkins-bot"
                     git config user.email "jenkins@lan"
-                    git commit -am "ci(dev): update ${APP_NAME} to ${IMAGE_TAG} [skip ci]"
-                    git push origin main
+                    
+                    if git status --porcelain | grep -q 'kustomization.yaml'; then
+                        git add kustomization.yaml
+                        git commit -m "ci(${params.TARGET_ENV}): promote ${APP_NAME} to ${env.FINAL_TAG} via Jenkins [skip ci]"
+                        GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" git push origin main
+                        echo "✅ Đã commit và push cập nhật GitOps Backend thành công!"
+                    else
+                        echo "ℹ️ Tag ${env.FINAL_TAG} đã tồn tại trong kustomization.yaml của ${params.TARGET_ENV}, không có thay đổi mới."
+                    fi
                 """
-                */
-                echo "Sẵn sàng tự động cập nhật GitOps khi kết nối token GitHub"
+            }
+        }
+
+        stage('5. Kiểm tra trạng thái triển khai') {
+            steps {
+                script {
+                    echo "🎉 Đã hoàn tất đẩy cấu hình Backend vào GitOps!"
+                    echo "Argo CD sẽ tự động đồng bộ (hoặc bấm Sync trên Argo CD nếu là Production)."
+                    def targetHost = "${params.TARGET_ENV}.cuahang.lan"
+                    if (params.TARGET_ENV == 'prod') {
+                        targetHost = "cuahang.lan"
+                    }
+                    echo "🌐 Endpoint kiểm tra API Health: http://${targetHost}/healthz"
+                    echo "🌐 Endpoint kiểm tra API Products: http://${targetHost}/api/products"
+                }
             }
         }
     }
 
     post {
         success {
-            echo "✅ Pipeline CI/CD cho cuahang-be (Go) thành công!"
+            echo "✅ Pipeline Backend hoàn thành xuất sắc! Môi trường [ ${params.TARGET_ENV.toUpperCase()} ] đã được đồng bộ với Tag [ ${env.FINAL_TAG} ]."
         }
         failure {
-            echo "❌ Pipeline thất bại! Vui lòng kiểm tra log chi tiết."
+            echo "❌ Pipeline Backend gặp lỗi! Vui lòng kiểm tra log chi tiết."
         }
     }
 }
