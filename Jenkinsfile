@@ -15,7 +15,7 @@ pipeline {
         string(
             name: 'IMAGE_TAG',
             defaultValue: 'v1.0.0',
-            description: '🏷️ Tag phiên bản SemVer (ví dụ: v1.0.0, v1.1.0, v2.0.0):'
+            description: '🏷️ Tag phiên bản SemVer (định dạng vx.x.x - Ví dụ: v1.0.0, v1.1.0, v2.0.0):'
         )
     }
 
@@ -31,9 +31,9 @@ pipeline {
             steps {
                 script {
                     if (params.ACTION == 'Build & Deploy') {
-                        env.FINAL_TAG = params.IMAGE_TAG ?: "build-${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+                        env.FINAL_TAG = (params.IMAGE_TAG && params.IMAGE_TAG.trim() != '') ? params.IMAGE_TAG.trim() : "v1.0.${BUILD_NUMBER}"
                     } else {
-                        env.FINAL_TAG = params.IMAGE_TAG
+                        env.FINAL_TAG = params.IMAGE_TAG.trim()
                     }
                     echo "=========================================================="
                     echo "🚀 KẾ HOẠCH TRIỂN KHAI BACKEND (Go Gin + PostgreSQL):"
